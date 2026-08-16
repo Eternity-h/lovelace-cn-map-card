@@ -1,4 +1,4 @@
-console.info("%c  GAODE MAP CARD  \n%c Version 1.2.7 ",
+console.info("%c  GAODE MAP CARD  \n%c Version 1.2.8 ",
 "color: orange; font-weight: bold; background: black", 
 "color: white; font-weight: bold; background: dimgray");
 
@@ -8,12 +8,6 @@ import './w3color.js';
 const preloadCard = type => window.loadCardHelpers()
 .then(({ createCardElement }) => createCardElement({type}));
 
-const LitElement = Object.getPrototypeOf(
-  customElements.get("ha-panel-lovelace")
-);
-const html = LitElement.prototype.html;
-const css = LitElement.prototype.css;
-const includeDomains = ["device_tracker","person"];
 class GaodeMapCard extends HTMLElement {
   constructor() {
     super();
@@ -46,7 +40,7 @@ class GaodeMapCard extends HTMLElement {
     ];
 
     this.root = this.attachShadow({ mode: 'open' });
-    if (this.root.lastChild) this.root.removeChild(root.lastChild);
+    this._loadStarted = false;
     const style = document.createElement('style');
     style.textContent = this._cssData();
     this.root.appendChild(style);
@@ -64,6 +58,7 @@ class GaodeMapCard extends HTMLElement {
     this.root.appendChild(hacard);
     let fitButton = this.root.querySelector("#fitbutton")
     fitButton.addEventListener('click', () => {
+      if(!this.map)return;
       if(this.trace){
         this.trace=false
         this.root.querySelector("#fitbutton").classList.remove("active")
@@ -76,21 +71,114 @@ class GaodeMapCard extends HTMLElement {
     });
   }
   connectedCallback(){
-    // console.log(this.config);
+    if(this._loadStarted)return;
+    this._loadStarted = true;
+    this.config = this.config || {};
+    if(!this.config.key){
+      console.warn("%c GAODE MAP CARD %c 未配置高德API Key,正在使用内置Key(随时可能失效或被滥用限流)。请到 https://lbs.amap.com 申请自己的Key,并配置 securityJsCode(安全密钥)。", "color: orange; font-weight: bold; background: black", "color:#333;background:#ffc");
+    }
     this._loadMap({
-      key: this.config.key||"ce3b1a3a7e67fc75810ce1ba1f83c01a",   // 申请好的Web端开发者Key，首次调用 load 时必填 f87e0c9c4f3e1e78f963075d142979f0
-      version: "2.0",   // 指定要加载的 JSAPI 的版本，缺省时默认为 1.4.15
-      plugins: ['AMap.MoveAnimation'] //插件列表
+      key: this.config.key||"ce3b1a3a7e67fc75810ce1ba1f83c01a",
+      version: "2.0",
+      plugins: ['AMap.MoveAnimation'],
+      securityJsCode: this.config.securityJsCode || ''   // 高德安全密钥,2021年12月起新Key强制要求
     });
   }
-  static getConfigElement() {
-    return document.createElement("gaode-map-card-editor");
+  disconnectedCallback(){
+    if(this.map){
+      try{ this.map.destroy(); }catch(e){}
+      this.map = null;
+    }
+    this.loaded = false;
+    this._loadStarted = false;
+    this.markers = {};
+    this.paths = {};
+    this.historyPath = {};
+    this.persons = [];
+    this.positions = {};
+    this.oldentities = [];
+    this.fit = 0;
+    this.trace = false;
+    this.old_mode = undefined;
+    let fitButton = this.root.querySelector("#fitbutton");
+    if(fitButton)fitButton.classList.remove("active");
   }
   static getStubConfig() {
     return {aspect_ratio: '1',
             dark_mode: "auto",
             traffic: false,
+            key: "",
+            securityJsCode: "",
             entities: ["zone.home"] }
+  }
+  static getConfigForm() {
+    return {
+      schema: [
+        { name: "title", selector: { text: {} } },
+        { name: "aspect_ratio", selector: { text: {} } },
+        {
+          type: "grid",
+          name: "",
+          schema: [
+            { name: "default_zoom", selector: { number: { mode: "box", min: 3, max: 19 } } },
+            { name: "hours_to_show", selector: { number: { mode: "box", min: 0 } } },
+          ],
+        },
+        {
+          name: "dark_mode",
+          selector: {
+            select: {
+              options: [
+                { value: "normal", label: "白天模式" },
+                { value: "dark", label: "夜间模式" },
+                { value: "auto", label: "跟随主题" },
+              ],
+            },
+          },
+        },
+        { name: "traffic", selector: { boolean: {} } },
+        { name: "angle", selector: { entity: { include_domains: ["sensor"] } } },
+        {
+          name: "entities",
+          selector: {
+            entity: {
+              multiple: true,
+              include_domains: ["person", "device_tracker", "zone"],
+            },
+          },
+        },
+        { name: "key", selector: { text: {} } },
+        { name: "securityJsCode", selector: { text: {} } },
+      ],
+      computeLabel: (schema) => {
+        switch (schema.name) {
+          case "title": return "标题";
+          case "aspect_ratio": return "宽高比 (如 1 或 16:9)";
+          case "default_zoom": return "默认缩放级别";
+          case "hours_to_show": return "历史轨迹时长 (小时)";
+          case "dark_mode": return "地图模式";
+          case "traffic": return "实时路况";
+          case "angle": return "方向传感器 (可选)";
+          case "entities": return "实体 (person / device_tracker / zone)";
+          case "key": return "API KEY (必填)";
+          case "securityJsCode": return "安全密钥 securityJsCode";
+        }
+        return undefined;
+      },
+      computeHelper: (schema) => {
+        switch (schema.name) {
+          case "entities":
+            return "默认按GPS原始坐标显示。如需百度/高德/图吧坐标,请在YAML模式为实体添加 type: baidu / gaode / mapbar 字段";
+          case "angle":
+            return "开启追踪(点击左上角按钮)时地图自动旋转";
+          case "key":
+            return "请到 https://lbs.amap.com 申请自己的Key,内置Key随时可能失效或被滥用限流";
+          case "securityJsCode":
+            return "2021年12月后高德强制要求,新申请的Key必须配置,否则地图无法加载";
+        }
+        return undefined;
+      },
+    };
   }
   set isPanel(isPanel){ 	
     this._isPanel = isPanel;
@@ -102,9 +190,10 @@ class GaodeMapCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    this.entities = this.config.entities; 
+    if(!this.config)return;
+    this.entities = this.config.entities || [];
     this.card.header=this.config.title;
-    if(!this.loaded || this.config.entities.length<1)return;
+    if(!this.loaded || this.entities.length<1)return;
     if(this._isPanel){
       this.root.querySelector("#root").style.paddingBottom = 0;
       this.setAttribute("is-panel","");
@@ -117,6 +206,8 @@ class GaodeMapCard extends HTMLElement {
       this.markers = {};
       this.paths = {};
       this.historyPath = {};
+      this.persons = [];
+      this.fit = 0;
       this.entities.forEach(function(entity,index) {
         let entityt = typeof entity === "string"?entity:entity.entity;
         let type = entity.type?entity.type:"gps";
@@ -132,7 +223,10 @@ class GaodeMapCard extends HTMLElement {
       }
       //实时追踪
       if(this.trace){
-        let angle = this.config.angle?hass.states[this.config.angle].state:0;
+        let angle = 0;
+        if(this.config.angle && hass.states[this.config.angle]){
+          angle = hass.states[this.config.angle].state || 0;
+        }
         if(angle)this.map.setRotation(360-angle);
         this.map.setFitView(this.persons, false, [40, 40, 40, 40]);
       }
@@ -140,7 +234,7 @@ class GaodeMapCard extends HTMLElement {
     }
 
     //更新式样
-    let dark_mode = this.config.dark_mode;
+    let dark_mode = this.config.dark_mode || "normal";
     let newTheme = hass.themes.default_theme;
     let style = dark_mode;
     
@@ -150,7 +244,7 @@ class GaodeMapCard extends HTMLElement {
         this.root.querySelector("#map").className = style;
         this.old_mode = dark_mode;
       }else{
-        let cardColor = hass.themes.themes[newTheme]["primary-background-color"] || "#FFFFF";
+        let cardColor = (hass.themes.themes[newTheme] || {})["primary-background-color"] || "#FFFFFF";
         let lightness = cardColor?w3color(cardColor).lightness:1;
         let colorDark = lightness<0.5?true:false;
         style = colorDark?'dark':'normal';
@@ -162,7 +256,7 @@ class GaodeMapCard extends HTMLElement {
     }
     if(dark_mode==="auto"){
       if(this.theme!=newTheme){
-        let cardColor = hass.themes.themes[newTheme]["primary-background-color"] || "#FFFFF";
+        let cardColor = (hass.themes.themes[newTheme] || {})["primary-background-color"] || "#FFFFFF";
         let lightness = cardColor?w3color(cardColor).lightness:1;
         let colorDark = lightness<0.5?true:false;
         style = colorDark?'dark':'normal';
@@ -173,10 +267,12 @@ class GaodeMapCard extends HTMLElement {
       }
     }
     //实时路况图层
-    if(this.config.traffic){
-      this.trafficLayer.show();
-    }else{
-      this.trafficLayer.hide();
+    if(this.trafficLayer){
+      if(this.config.traffic){
+        this.trafficLayer.show();
+      }else{
+        this.trafficLayer.hide();
+      }
     }
     //更新视界
     // console.info(this.fit)
@@ -186,22 +282,38 @@ class GaodeMapCard extends HTMLElement {
     }
   }
   setConfig(config) {
-    preloadCard('map');
-    customElements.get("hui-map-card");
+    preloadCard('map').catch(function(e){ console.warn("GaodeMapCard: 预加载官方地图卡片失败", e); });
 
     this.config = deepClone(config);
     let d = this.root.querySelector("#root")
-    d.style.paddingBottom = 100*(this.config.aspect_ratio||1)+"%";
+    d.style.paddingBottom = 100*this._parseAspectRatio(this.config.aspect_ratio)+"%";
+  }
+  _parseAspectRatio(value){
+    if(!value)return 1;
+    if(typeof value === "number")return value>0?value:1;
+    let s = String(value).trim();
+    if(s.indexOf(":")>-1){
+      let parts = s.split(":");
+      let w = parseFloat(parts[0]);
+      let h = parseFloat(parts[1]);
+      if(w>0 && h>0)return w/h;
+    }
+    let n = parseFloat(s);
+    return (isNaN(n)||n<=0)?1:n;
   }
   _loadMap(config){
-    
+    if(typeof AMapLoader === "undefined"){
+      console.error("GaodeMapCard: 高德地图Loader加载失败,请检查网络或浏览器CSP是否允许加载 https://webapi.amap.com/loader.js");
+      this._loadStarted = false;
+      return;
+    }
     AMapLoader.load(config).then(()=>{
       let mapContainer = this.root.querySelector("#container");
       this.map = new AMap.Map(mapContainer,{
         viewMode: '3D',
         zoom: this.config.default_zoom || 9
       });
-      let mode = this.config.dark_mode;
+      let mode = this.config.dark_mode || "normal";
       let style = (mode==="auto")?"normal":mode;
       this.old_mode = mode;
       this.map.setMapStyle("amap://styles/"+style);
@@ -213,8 +325,12 @@ class GaodeMapCard extends HTMLElement {
       });
       this.trafficLayer.setMap(this.map);
       this.loaded = true;
+      if(this._hass && this._hass.states){
+        this.hass = this._hass;   // 地图加载完成后立即刷新一次标记,避免等待下一次状态推送
+      }
     }).catch(e => {
-        console.log(e);
+        console.error("GaodeMapCard: 地图加载失败,请检查Key/安全密钥/网络", e);
+        this._loadStarted = false;
     })
   }
   _updateMarker(entity,type){
@@ -237,7 +353,7 @@ class GaodeMapCard extends HTMLElement {
     if(distance>5){
       const that  = this;
       AMap.convertFrom(gps, type, function (status, result) {
-        if (result.info === 'ok' && that.markers[entity]) {
+        if (status === 'complete' && result && result.info === 'ok' && that.markers[entity]) {
           that.markers[entity].moveTo(result.locations[0], {
               autoRotation: false
           })
@@ -253,8 +369,8 @@ class GaodeMapCard extends HTMLElement {
     
     let color = this._colors[index%this._colors.length];
     let objstates = this._hass.states[entity];
+    this.fit++;
     if(!objstates || !objstates.attributes.longitude){
-      this.fit++;
       return
     } 
     let gps = new AMap.LngLat(objstates.attributes.longitude, objstates.attributes.latitude);
@@ -264,7 +380,7 @@ class GaodeMapCard extends HTMLElement {
     }else{
       AMap.convertFrom(gps, type, function (status, result) {
         // console.info(result.locations[0])
-        if (result.info === 'ok') {
+        if (status === 'complete' && result && result.info === 'ok') {
           that._showMarker(result.locations[0],entity,color,type);
         }
       });
@@ -308,8 +424,6 @@ class GaodeMapCard extends HTMLElement {
       }
     }
     this.markers[entity] = marker;
-    this.fit++;
-    if(this.fit === this.entities.length)this.loaded = true;
   }
   
   _gethistory(hours, entity, color, type){
@@ -361,7 +475,7 @@ class GaodeMapCard extends HTMLElement {
           }
         }else{
           AMap.convertFrom(lineArr, type, function (status, result) {
-            if (result.info === 'ok') {
+            if (status === 'complete' && result && result.info === 'ok') {
               var path2 = result.locations;
               if( that.paths[entity]){
                 that.paths[entity].setPath(path2);
@@ -396,6 +510,8 @@ class GaodeMapCard extends HTMLElement {
         }
 
       }
+    }).catch(function(err){
+      console.warn("GaodeMapCard: 获取历史轨迹失败", err);
     })
   }
   _cssData(){
@@ -497,255 +613,6 @@ function deepClone(value) {
   return result;
 }
 customElements.define("gaode-map-card", GaodeMapCard);
-
-export class GaodeMapCardEditor extends LitElement {
-
-  setConfig(config) {
-    this.config = deepClone(config);
-    this._configEntities = config.entities
-      ? this._processEditorEntities(config.entities)
-      : [];
-  }
-
-  static get properties() {
-    return {
-      hass: {},
-      config: {}
-    };
-  }
-
-  render() {
-    var patt = new RegExp("device_tracker|zone|person")
-    if (!this.hass) {
-      return html``;
-    }
-
-    let dark_mode = this.config.dark_mode
-    return html`
-      <div class="card-config">
-        <paper-input
-          label="${this.hass.localize("ui.panel.lovelace.editor.card.generic.title")} (${this.hass.localize("ui.panel.lovelace.editor.card.config.optional")})"
-          .value="${this.config.title}"
-          .configValue="${"title"}"
-          @value-changed="${this._valueChanged}"
-        ></paper-input>
-        <div class="side-by-side">
-          <paper-input
-            label="${this.hass.localize("ui.panel.lovelace.editor.card.generic.aspect_ratio")} (${this.hass.localize("ui.panel.lovelace.editor.card.config.optional")})"
-            .value="${this.config.aspect_ratio}"
-            .configValue="${"aspect_ratio"}"
-            @value-changed="${this._valueChanged}"
-          ></paper-input>
-          <paper-input
-            label="${this.hass.localize("ui.panel.lovelace.editor.card.map.default_zoom")} (${this.hass.localize("ui.panel.lovelace.editor.card.config.optional")})"
-            type="number"
-            .value="${this.config.default_zoom}"
-            .configValue="${"default_zoom"}"
-            @value-changed="${this._valueChanged}"
-          ></paper-input>
-        </div>
-        <div class="side-by-side">
-          <mwc-formfield label="实时路况">
-            <ha-switch
-              ?checked="${this.config.traffic !== false}"
-              .configValue="${"traffic"}"
-              @change="${this._valueChanged}"
-              ></ha-switch>
-              
-          </mwc-formfield>
-          <paper-input
-            label="${this.hass.localize("ui.panel.lovelace.editor.card.map.hours_to_show")} (${this.hass.localize("ui.panel.lovelace.editor.card.config.optional")})"
-            type="number"
-            .value="${this.config.hours_to_show}"
-            .configValue="${"hours_to_show"}"
-            @change="${this._valueChanged}"
-          ></paper-input>
-        </div>
-        <div class="side-by-side">
-          <mwc-formfield label="白天模式">
-              <mwc-radio id="b1" ?checked=${(dark_mode==='normal')} value="normal" name="style_mode" .configValue="${"dark_mode"}" @change="${this._valueChanged}"></mwc-radio>
-          </mwc-formfield>
-          <mwc-formfield label="夜间模式">
-              <mwc-radio id="b2" ?checked=${(dark_mode==='dark')} value="dark" name="style_mode" .configValue="${"dark_mode"}" @change="${this._valueChanged}"></mwc-radio>
-          </mwc-formfield>
-          <mwc-formfield label="跟随主题">
-              <mwc-radio id="b3" ?checked=${(dark_mode==='auto')} value="auto" name="style_mode" .configValue="${"dark_mode"}" @change="${this._valueChanged}"></mwc-radio>
-          </mwc-formfield>
-        </div>
-        <hui-entity-editor
-          .hass="${this.hass}"
-          .entities="${this._configEntities}"
-          .includeDomains=${includeDomains}
-          @entities-changed="${this._entitiesValueChanged}"
-        ></hui-entity-editor>
-
-        <h3>API KEY
-        <a href="//lbs.amap.com/dev/id/newuser" class="" target="_blank">获取KEY</a>
-        </h3>
-        <div class="gaode_key">
-          <paper-input
-            label="${this.hass.localize("component.airvisual.config.step.user.data.api_key")}"
-            .value="${this.config.key}"
-            .configValue="${"key"}"
-            @value-changed="${this._valueChanged}"
-          ></paper-input>
-        </div>
-      </div>
-      <datalist id="browsers">
-      ${Object.keys(this.hass.states).filter(a => patt.test(a) ).map(entId => html`
-          <option value=${entId}>${this.hass.states[entId].attributes.friendly_name || entId}</option>
-        `)}
-      </datalist>
-    `;
-  }
-  static get styles() {
-    return css `
-    a{
-      color: var(--accent-color);
-    }
-    .side-by-side {
-      display: flex;
-    }
-    .side-by-side > * {
-      flex: 1;
-      padding-right: 4px;
-    }
-    ha-switch{
-      margin-right: 10px;
-    }
-    .entities > * {
-      width: 100%;
-      padding-right: 4px;
-
-    }
-    paper-dropdown-menu{
-      width: 100%;
-      padding-right: 4px;
-    }
-    paper-input-container ha-icon{
-      margin-right: 10px;
-    }
-    `
-  }
-  _focusEntity(e){
-    e.target.value = ''
-  }
-  _delEntity(ev){
-    const target = ev.target.previousElementSibling;
-    if (!this.config || !this.hass ) {
-      return;
-    }
-    const entities = this.config.entities
-    let id = -1 ;
-    for (var i=0; i < entities.length ; ++i){
-      if(entities[i]===target.value){
-        id = i
-      }
-    }
-    if(id>-1)entities.splice(id, 1);
-    this.configChanged(this.config)
-
-  }
-  _addEntity(ev){
-    const target = ev.target.value || ev.target.previousElementSibling.value;
-    if (!this.config || !this.hass || !target) {
-      return;
-    }
-    const entities = this.config.entities
-    let flag = true;
-    entities.forEach(item=>{
-      if(target===item){ 
-        flag = false;
-        ev.target.value = ''
-      }
-    })
-    if(flag){
-      entities.push(target)
-      this.config = {
-        ...this.config,
-        "entities": entities
-      };
-      this.configChanged(this.config)
-      ev.target.value = ''
-    }
-
-  }
-  _changeEntity(ev){
-    const target = ev.target;
-    if (!this.config || !this.hass || !target) {
-      return;
-    }
-    const entities = this.config.entities
-    let id = -1 ;
-    for (var i=0; i < entities.length ; ++i){
-      if(entities[i]===target.defaultValue){
-        id = i
-      }
-    }
-    if(id>-1){
-      delete entities[id];
-      entities[id] = target.value
-    }
-    this.configChanged(this.config)
-  }
-  _entitiesValueChanged(ev){
-    if (!this.config || !this.hass) {
-      return;
-    }
-    if (ev.detail && ev.detail.entities) {
-      this.config = { ...this.config, entities: ev.detail.entities };
-
-      this._configEntities = this._processEditorEntities(this.config.entities);
-      this.configChanged(this.config)
-    }
-  }
-
-  _valueChanged(ev) {
-    if (!this.config || !this.hass) {
-      return;
-    }
-    const target = ev.target;
-    if (this.config[`${target.configValue}`] === (target.value||target.__checked)) {
-      return;
-    }
-    if (target.configValue) {
-      if (target.value === "") {
-        delete this.config[target.configValue];
-      } else {
-        this.config = {
-          ...this.config,
-          [target.configValue]: target.value||target.__checked
-        };
-      }
-    }
-    this.configChanged(this.config)
-    // fireEvent(this, "config-changed", { config: this.config });
-  }
-
-  configChanged(newConfig) {
-    const event = new Event("config-changed", {
-      bubbles: true,
-      composed: true
-    });
-    event.detail = {config: newConfig};
-    this.dispatchEvent(event);
-  }
-  _processEditorEntities(entities) {
-    return entities.map((entityConf) => {
-      if (typeof entityConf === "string") {
-        return { entity: entityConf };
-      }
-      return entityConf;
-    });
-  }
-  firstUpdated(changedProperties) {
-    import('https://unpkg.com/@material/mwc-radio@0.18.0/mwc-radio.js?module');
-    preloadCard({type:'entities',geo_location_sources :''});
-    customElements.get("hui-entities-card").getConfigElement()
-  }
-}
-
-customElements.define("gaode-map-card-editor", GaodeMapCardEditor);
 
 window.customCards = window.customCards || [];
 window.customCards.push({

@@ -62,12 +62,20 @@
         type: gps
     hours_to_show: '18'
     key: f87e0casfdasfe7dfasdf979f0
+    securityJsCode: 你的安全密钥
     traffic: false
     type: 'custom:gaode-map-card'
 
   ````
 + v1.2.7
   + 优化代码,减少载入
+
++ v1.2.8
+  + 配置编辑器使用 HA 原生 getConfigForm 表单,支持全部配置项(标题、宽高比、缩放、历史轨迹、地图模式、实时路况、方向传感器、实体、API KEY、安全密钥)
+  + 支持高德安全密钥(securityJsCode),2021年12月后新申请的Key必须配置,否则地图无法加载
+  + 修复 `aspect_ratio` 配置为 `16:9` 时地图空白的问题
+  + 修复切换视图/编辑模式导致地图重复初始化的问题
+  + 增加容错:未配置entities、方向传感器缺失、地图加载失败时不再导致卡片崩溃
   
 ## 预览
 ![](1.gif)
@@ -76,11 +84,11 @@
 搜索Gaode Map card, 或者手动添加地址安装
 ## 手动安装
 1. 下载 `cn-map-card.js`
-1. 复制到 `www\community\lovelace-cn-map`
+1. 复制到 `www\community\lovelace-cn-map-card`
 1. 在Lovelace的resources下添加以下配置
     ``` yaml
     resources:
-      - url: /local/community/lovelace-cn-map/cn-map-card.js
+      - url: /local/community/lovelace-cn-map-card/cn-map-card.js
         type: module
     ```
 1. 在Lovelace视图 `views.cards` 内部添加卡片配置
@@ -96,8 +104,11 @@
         - zone.school
         - zone.home
       key: f87e0c9c4f3e1e78f963075d142979f0
+      securityJsCode: 你的安全密钥
       title: Map
     ```
+
+> **注意**:高德地图自2021年12月2日起,Web端JS API 强制要求"安全密钥"(securityJsCode)。新申请的Key必须同时配置 `securityJsCode`,否则地图无法加载。请到 [高德开放平台](https://lbs.amap.com) 申请Key并获取安全密钥。
 
 ## 选项
 
@@ -110,3 +121,5 @@
 | traffic | boolean | 选项 | 实时路况
 | hours_to_show | Number | 选项 | 指定时间内的历史路径,这里是填的是小时
 | key | string | **必选** | 自己去高德申请key,内置的key说不定哪天就失效了.
+| securityJsCode | string | 选项 | 高德安全密钥,2021年12月后申请的新Key必填
+| angle | entity id | 选项 | 方向传感器实体,开启追踪(点击左上角按钮)时地图自动旋转
