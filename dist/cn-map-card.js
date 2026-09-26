@@ -352,7 +352,7 @@ class GaodeMapCard extends HTMLElement {
     // console.log(distance);
     if(distance>5){
       const that  = this;
-      AMap.convertFrom(gps, type, function (status, result) {
+      that._convertToGaode(gps, type, function (status, result) {
         if (status === 'complete' && result && result.info === 'ok' && that.markers[entity]) {
           that.markers[entity].moveTo(result.locations[0], {
               autoRotation: false
@@ -364,6 +364,66 @@ class GaodeMapCard extends HTMLElement {
       });
     }
     this.positions[entity] = gps;
+  }
+  // ===== 本地补丁 2026-09-26：离线 WGS-84 -> GCJ-02 =====
+  // 原实现调用 AMap.convertFrom()，它内部走高德「坐标转换」REST 接口，要求 key
+  // 具备「Web服务(REST API)」平台权限；而加载地图的 key 必须是「Web端(JS API)」。
+  // 高德一个 key 只能选一个平台，所以纯 JS API key 调 convertFrom 必然失败，
+  // 且失败时回调既不画标记也不报错（上游 issue #24）。
+  // 这里改用公开的离线偏移算法，并且「同步回调」——顺带修掉 setFitView 的时序 bug
+  // （原来标记要等异步回调才进 this.persons，setFitView 永远拿到空数组）。
+  // baidu / mapbar 等其它坐标系仍回退到 AMap.convertFrom。
+  _convertToGaode(input, type, callback){
+    if(type !== 'gps'){
+      AMap.convertFrom(input, type, callback);
+      return;
+    }
+    const PI = 3.1415926535897932384626;
+    const A = 6378245.0;
+    const EE = 0.00669342162296594323;
+    const one = (lng, lat) => {
+      // 中国大陆范围外不做偏移
+      if(!(lng > 73.66 && lng < 135.05 && lat > 3.86 && lat < 53.55)){
+        return [lng, lat];
+      }
+      const dLat0 = lat - 35.0, dLng0 = lng - 105.0;
+      let dLat = -100.0 + 2.0*dLng0 + 3.0*dLat0 + 0.2*dLat0*dLat0
+               + 0.1*dLng0*dLat0 + 0.2*Math.sqrt(Math.abs(dLng0));
+      dLat += (20.0*Math.sin(6.0*dLng0*PI) + 20.0*Math.sin(2.0*dLng0*PI)) * 2.0/3.0;
+      dLat += (20.0*Math.sin(dLat0*PI) + 40.0*Math.sin(dLat0/3.0*PI)) * 2.0/3.0;
+      dLat += (160.0*Math.sin(dLat0/12.0*PI) + 320.0*Math.sin(dLat0*PI/30.0)) * 2.0/3.0;
+      let dLng = 300.0 + dLng0 + 2.0*dLat0 + 0.1*dLng0*dLng0
+               + 0.1*dLng0*dLat0 + 0.1*Math.sqrt(Math.abs(dLng0));
+      dLng += (20.0*Math.sin(6.0*dLng0*PI) + 20.0*Math.sin(2.0*dLng0*PI)) * 2.0/3.0;
+      dLng += (20.0*Math.sin(dLng0*PI) + 40.0*Math.sin(dLng0/3.0*PI)) * 2.0/3.0;
+      dLng += (150.0*Math.sin(dLng0/12.0*PI) + 300.0*Math.sin(dLng0/30.0*PI)) * 2.0/3.0;
+      const radLat = lat / 180.0 * PI;
+      let magic = Math.sin(radLat);
+      magic = 1 - EE * magic * magic;
+      const sqrtMagic = Math.sqrt(magic);
+      const mgLat = (dLat * 180.0) / ((A * (1 - EE)) / (magic * sqrtMagic) * PI);
+      const mgLng = (dLng * 180.0) / (A / sqrtMagic * Math.cos(radLat) * PI);
+      return [lng + mgLng, lat + mgLat];
+    };
+    const readLL = (p) => {
+      if(p && typeof p.getLng === 'function') return [p.getLng(), p.getLat()];
+      if(Array.isArray(p)) return [p[0], p[1]];
+      return [p.lng, p.lat];
+    };
+    let items;
+    if(Array.isArray(input)){
+      // [lng, lat] 两个数字视为单个点；否则视为点数组
+      items = (input.length === 2 && typeof input[0] === 'number' && typeof input[1] === 'number')
+        ? [input] : input;
+    }else{
+      items = [input];
+    }
+    const locations = items.map((p) => {
+      const ll = readLL(p);
+      const c = one(ll[0], ll[1]);
+      return new AMap.LngLat(c[0], c[1]);
+    });
+    callback('complete', { info: 'ok', locations: locations });
   }
   _addMarker(entity,index,type){
     
@@ -378,8 +438,7 @@ class GaodeMapCard extends HTMLElement {
     if(type=='gaode'){
       that._showMarker(gps,entity,color,type);
     }else{
-      AMap.convertFrom(gps, type, function (status, result) {
-        // console.info(result.locations[0])
+      this._convertToGaode(gps, type, function (status, result) {
         if (status === 'complete' && result && result.info === 'ok') {
           that._showMarker(result.locations[0],entity,color,type);
         }
@@ -394,19 +453,29 @@ class GaodeMapCard extends HTMLElement {
     let objstates = this._hass.states[entity];
     let entityPicture = objstates.attributes.entity_picture || '';
     let entityName =objstates.attributes.friendly_name?objstates.attributes.friendly_name.split(' ').map(function (part) { return part.substr(0, 1); }).join('') : '';
-    let markerContent = `<ha-entity-marker width="20" height="20" entity-id="`+entity+`" entity-name="`+entityName+`" entity-picture="`+entityPicture+`" entity-color="`+color+`"></ha-entity-marker>`
+    // 本地补丁 2026-09-26：device_tracker 直接用 ha-icon 画车辆图标。
+    // 原实现依赖 ha-entity-marker，但该元素拿不到 hass，且实体又没有
+    // icon/entity_picture 时，只会渲染成一个纯色小圆点（卡片 CSS 还把它
+    // 限制成 24x24）。卡片自身已有 `.amap-marker ha-icon` 的定位样式。
+    let markerContent = (domain==='device_tracker')
+      ? `<div style="width:28px;height:28px;border-radius:50%;background:#fff;border:2px solid `+color+`;box-shadow:0 1px 4px rgba(0,0,0,.35);box-sizing:content-box;"><ha-icon icon="`+(this.config.vehicle_icon||'mdi:car')+`" style="color:`+color+`;"></ha-icon></div>`
+      : `<ha-entity-marker width="20" height="20" entity-id="`+entity+`" entity-name="`+entityName+`" entity-picture="`+entityPicture+`" entity-color="`+color+`"></ha-entity-marker>`
 
-    //区域
-    var circle = new AMap.Circle({
-      center: result,  // 圆心位置
-      radius: objstates.attributes.radius || objstates.attributes.gps_accuracy, // 圆半径
-      fillColor: domain==='zone'?'rgb(255, 152, 0)':color,   // 圆形填充颜色
-      fillOpacity: 0.2,
-      zIndex: 101,
-      strokeColor: domain==='zone'?'rgb(255, 152, 0)':color, // 描边颜色
-      strokeWeight: 3, // 描边宽度
-    });
-    this.map.add(circle);
+    //区域（本地补丁：radius 为 0 时不画 —— AMap.Circle 半径 0 加 3px 描边
+    // 会在标记上画出一个同色小圆点。device_tracker 的 gps_accuracy 常为 0）
+    var circleRadius = objstates.attributes.radius || objstates.attributes.gps_accuracy || 0;
+    if(circleRadius > 0){
+      var circle = new AMap.Circle({
+        center: result,  // 圆心位置
+        radius: circleRadius, // 圆半径
+        fillColor: domain==='zone'?'rgb(255, 152, 0)':color,   // 圆形填充颜色
+        fillOpacity: 0.2,
+        zIndex: 101,
+        strokeColor: domain==='zone'?'rgb(255, 152, 0)':color, // 描边颜色
+        strokeWeight: 3, // 描边宽度
+      });
+      this.map.add(circle);
+    }
     
     //标记点
     let marker = new AMap.Marker({
@@ -474,7 +543,7 @@ class GaodeMapCard extends HTMLElement {
             }
           }
         }else{
-          AMap.convertFrom(lineArr, type, function (status, result) {
+          that._convertToGaode(lineArr, type, function (status, result) {
             if (status === 'complete' && result && result.info === 'ok') {
               var path2 = result.locations;
               if( that.paths[entity]){
