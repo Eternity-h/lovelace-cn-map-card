@@ -16,6 +16,34 @@
 + 完全复刻官方的卡片
 + 支持前台自定义卡片配置.
 
+---
+
+## ⚠️ 本仓库是打了补丁的 fork
+
+上游：[fineemb/lovelace-cn-map-card](https://github.com/fineemb/lovelace-cn-map-card)（MIT）
+本 fork 基于 **v1.2.8**（commit `88cb29d`），修复了以下 4 个问题：
+
+| # | 问题 | 症状 |
+|---|---|---|
+| 1 | `AMap.convertFrom` 的 key 平台权限不匹配 | 地图正常显示，但**标记完全不出现**（转换失败时回调静默丢弃） |
+| 2 | `setFitView` 时序 bug | 视野停在默认中心，不自动缩放到实体 |
+| 3 | 标记渲染依赖 `ha-entity-marker` | 实体没有 icon / 图片时只画出一个**纯色小圆点** |
+| 4 | 精度圈半径为 0 时仍绘制 | 标记上多出一个**小色点** |
+
+### 修复方式
+
+1. **坐标转换改为离线算法。** `AMap.convertFrom` 内部走高德「坐标转换」REST 接口，要求 key 具备**「Web服务(REST API)」**权限；而加载地图用的 key 必须是**「Web端(JS API)」**。高德一个 key 只能选一个平台，所以**纯 JS API key 调它必然失败**。改用公开的离线 WGS-84 → GCJ-02 算法：不联网、不需要第二个 key；并改为**同步回调**，顺带修掉问题 2。
+2. **`device_tracker` 标记改用 `<ha-icon>`**，不再依赖 `ha-entity-marker`；新增 [`vehicle_icon`](#选项) 配置项可自定义图标（默认 `mdi:car`）。
+3. **精度圈半径为 0 时不绘制。**
+
+### 与上游的差异范围
+
+只改 `cn-map-card.js`（及其在 `dist/` 下的副本），共 6 处；**配置项与行为完全向后兼容**。`baidu` / `mapbar` 等其它坐标系仍回退到 `AMap.convertFrom`；中国大陆范围外不做坐标偏移。
+
+> 上游同类问题分析见 issue [#24](https://github.com/fineemb/lovelace-cn-map-card/issues/24)。
+
+---
+
 ## 更新
 
 + v1.1
@@ -76,6 +104,12 @@
   + 修复 `aspect_ratio` 配置为 `16:9` 时地图空白的问题
   + 修复切换视图/编辑模式导致地图重复初始化的问题
   + 增加容错:未配置entities、方向传感器缺失、地图加载失败时不再导致卡片崩溃
+
++ v1.2.8-fork.1 (**本 fork**)
+  + 修复 `AMap.convertFrom` 平台权限不匹配导致**标记不显示**的问题,改用离线坐标转换
+  + 转换为同步回调,顺带修复 `setFitView` 时序导致的**视野不跟随**
+  + `device_tracker` 标记改用 `ha-icon`,新增 `vehicle_icon` 配置项
+  + 精度圈半径为 0 时不再绘制,消除标记上的小色点
   
 ## 预览
 ![](1.gif)
@@ -83,8 +117,9 @@
 ## HACS 安装
 搜索Gaode Map card, 或者手动添加地址安装
 ## 手动安装
-1. 下载 `cn-map-card.js`
-1. 复制到 `www\community\lovelace-cn-map-card`
+1. 下载 **`cn-map-card.js` 和 `w3color.js` 两个文件**
+   > 主文件里有 `import './w3color.js'`。缺了它整个 ES module 加载失败，卡片会报 `Custom element doesn't exist: gaode-map-card`。
+1. 两个文件一起复制到 `www\community\lovelace-cn-map-card`
 1. 在Lovelace的resources下添加以下配置
     ``` yaml
     resources:
@@ -123,3 +158,4 @@
 | key | string | **必选** | 自己去高德申请key,内置的key说不定哪天就失效了.
 | securityJsCode | string | 选项 | 高德安全密钥,2021年12月后申请的新Key必填
 | angle | entity id | 选项 | 方向传感器实体,开启追踪(点击左上角按钮)时地图自动旋转
+| vehicle_icon | string | `mdi:car` | **本 fork 新增**：`device_tracker` 标记的图标。可选 `mdi:car`、`mdi:car-estate`、`mdi:car-electric`、`mdi:car-side`、`mdi:car-sports` 等 |
